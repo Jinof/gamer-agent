@@ -1,0 +1,22 @@
+.DS_Store
+.claude/
+node_modules/
+dist/
+out/
+npm-debug.log*
+*.log
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Electron local state and secrets must never enter source control.
+.gamer-agent-data/
+credentials.bin
+
+# Keep the existing Xcode project, but ignore per-user workspace state.
+*.xcuserstate
+xcuserdata/

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gamer Agent - 截图分析</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">WINDOWS 优先 · 第一阶段</p>
+        <h1>Gamer Agent</h1>
+        <p class="subtitle">由你触发、由你确认的游戏截图策略分析</p>
+      </div>
+      <div class="readonly-badge"><span></span>只读模式</div>
+    </header>
+
+    <main class="layout">
+      <section class="workspace" aria-label="截图分析工作区">
+        <div class="notice" id="privacy-notice">
+          <div class="notice-icon" aria-hidden="true">盾</div>
+          <div>
+            <strong>发送边界</strong>
+            <p>
+              仅在你点击“截取”或“选择图片”时读取一个画面；图片先留在本机预览。
+              只有再次勾选确认并点击“发送并分析”，图片才会发往你配置的模型服务。
+              本应用不会连续截屏、控制鼠标键盘或绕过反作弊。
+            </p>
+          </div>
+        </div>
+
+        <section class="card empty-card" id="unconfigured-card">
+          <div class="state-icon">1</div>
+          <div>
+            <h2>先配置你的模型服务</h2>
+            <p>填写完整 API 地址、视觉模型名称和 API Key。未配置完成前不会采集或发送画面。</p>
+          </div>
+        </section>
+
+        <section class="card capture-card">
+          <div class="card-heading">
+            <div>
+              <p class="step">步骤 1</p>
+              <h2>选择画面来源</h2>
+            </div>
+            <button class="button secondary" id="refresh-sources" type="button">刷新桌面与窗口</button>
+          </div>
+
+          <label class="field-label" for="capture-source">截图目标</label>
+          <select id="capture-source" disabled>
+            <option value="">点击“刷新桌面与窗口”后选择</option>
+          </select>
+          <p class="field-help">窗口标题只用于本地选择；刷新列表不会向模型发送任何内容。</p>
+          <div class="capture-availability" id="capture-availability">
+            <span class="availability-dot" aria-hidden="true"></span>
+            <span>Windows 截图能力：<strong id="capture-availability-text">尚未检查</strong></span>
+          </div>
+
+          <div class="action-row">
+            <button class="button primary" id="capture-button" type="button" disabled>
+              截取并在本地预览
+            </button>
+            <button class="button secondary" id="choose-image-button" type="button" disabled>
+              选择本地图片
+            </button>
+          </div>
+        </section>
+
+        <section class="card preview-card hidden" id="preview-card">
+          <div class="card-heading">
+            <div>
+              <p class="step">步骤 2</p>
+              <h2>确认要发送的画面</h2>
+            </div>
+            <button class="button ghost" id="discard-preview" type="button">放弃</button>
+          </div>
+          <div class="preview-frame">
+            <img id="preview-image" alt="等待用户确认发送的本地截图预览" />
+          </div>
+          <p class="preview-meta" id="preview-meta"></p>
+          <label class="consent-row">
+            <input id="send-consent" type="checkbox" />
+            <span id="consent-copy">我确认将这张图片发送给我配置的模型服务进行分析。</span>
+          </label>
+          <button class="button primary wide" id="analyze-button" type="button" disabled>
+            确认发送并分析
+          </button>
+        </section>
+
+        <section class="card state-card hidden" id="processing-card" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <div>
+            <h2>正在分析游戏画面…</h2>
+            <p id="processing-target">已发送至你配置的模型服务，请稍候。</p>
+          </div>
+        </section>
+
+        <section class="card result-card hidden" id="result-card" aria-live="polite">
+          <div class="card-heading">
+            <div>
+              <p class="step success">分析完成</p>
+              <h2>策略建议</h2>
+            </div>
+            <button class="button secondary" id="new-analysis" type="button">分析另一张</button>
+          </div>
+          <p class="result-meta" id="result-meta"></p>
+          <div class="result-content" id="result-content"></div>
+        </section>
+
+        <section class="card error-card hidden" id="error-card" aria-live="assertive">
+          <div class="state-icon error">!</div>
+          <div>
+            <h2>操作没有完成</h2>
+            <p id="error-message"></p>
+            <button class="button secondary" id="dismiss-error" type="button">返回</button>
+          </div>
+        </section>
+      </section>
+
+      <aside class="settings-panel" aria-label="模型服务设置">
+        <div class="settings-heading">
+          <div>
+            <p class="step">设置</p>
+            <h2>模型服务</h2>
+          </div>
+          <span class="status-pill" id="configuration-status">未配置</span>
+        </div>
+
+        <form id="settings-form">
+          <label class="field-label" for="endpoint">Chat Completions API 地址</label>
+          <input
+            id="endpoint"
+            name="endpoint"
+            type="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="https://example.com/v1/chat/completions"
+            required
+          />
+          <p class="field-help">远程地址必须使用 HTTPS；本机 localhost 可使用 HTTP。</p>
+
+          <label class="field-label" for="model">视觉模型名称</label>
+          <input
+            id="model"
+            name="model"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="例如 vision-model"
+            required
+          />
+
+          <label class="field-label" for="api-key">API Key</label>
+          <input
+            id="api-key"
+            name="apiKey"
+            type="password"
+            autocomplete="new-password"
+            placeholder="输入后由系统安全存储保护"
+          />
+          <p class="field-help" id="key-help">Key 不会写入普通设置文件，也不会显示在界面中。</p>
+
+          <label class="clear-key-row hidden" id="clear-key-row">
+            <input id="clear-api-key" type="checkbox" />
+            <span>删除已保存的 API Key</span>
+          </label>
+
+          <button class="button primary wide" id="save-settings" type="submit">保存设置</button>
+          <p class="form-message" id="settings-message" role="status"></p>
+        </form>
+
+        <div class="boundary-list">
+          <h3>本阶段明确不做</h3>
+          <ul>
+            <li>鼠标、键盘或手柄自动控制</li>
+            <li>后台连续截图或静默上传</li>
+            <li>反作弊规避与自动行动闭环</li>
+          </ul>
+        </div>
+      </aside>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
