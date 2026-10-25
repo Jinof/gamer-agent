@@ -1,125 +1,40 @@
 ---
 name: aoe4-demo-analysis
-description: 对《帝国时代 IV》1v1 对局双方录像分析, 给出胜利者做的对的地方以及失败者做的可改进的地方。截图分析对局录像，给出关键对局节点，以及各时间点的胜率。
+description: 对《帝国时代 IV》1v1 对局复盘，先用 AoE4 World 开源解析器读取对局摘要，以解析数据为准，再结合双方录像分析关键节点、胜者优势、败者改进和积分映射胜率。
 ---
 
-# AoE4 双视角录像复盘
+# AoE4 对局复盘
 
-使用 `gamer-agent` CLI, 处理用户指定的对局录像文件。
-工作目录为 ~/.gamer-agent
+## 第一步：通过 AoE4 解析器读取数据
 
-## 第一步: 确定对局录像
-根据用户给出对局双方的对局录像文件地址确定对局录像，若用户未指定默认从 Xbox/Windows 截图/录像目录中搜索。与用户确认文件。记文件为 A B。
+1. 使用 [AoE4 World 开源解析器](https://github.com/aoe4world/replays-api)读取用户指定的对局摘要；未指定时，从 `Documents/My Games/Age of Empires IV/network` 查找 `M_<对局ID>_*.gz`。根据对局 ID、双方姓名、文明和时长核对目标，不能只按缓存修改时间判断最近一局。
+2. 解压 `.gz`，用 `ReplaySummaryParser` 解析、`GameSummaryGenerator` 生成摘要。输入应为文件头为 `Relic Chunky` 的统计摘要；`AOE4_RE` 完整回放不是统计摘要，现有解析器尚未实现其完整命令流解析。
+3. 保存解析 JSON 和时间序列，记录输入文件、对局 ID、解析器版本及实际采样间隔。提取胜负、升时代时间、资源、积分、单位创建与损失、击杀价值、遗物等可用数据。
+4. **以解析成功、身份匹配且含义明确的解析数据为准。** 截图／OCR 不覆盖这些数据；发生冲突先核对时间、字段含义与版本兼容性。找不到摘要或解析失败时，说明原因及缺失项，再用录像补充。
 
-### 准备工具与查询录像信息
+保留原始采样粒度，不把插值或邻近值当作精确观测。未知字段不解释；实体损失记录不全部等于士兵阵亡，总人口不等于军队人口。
 
-以下 PowerShell 代码块在同一会话中依次执行。替换双方录像路径；工具不在 PATH 时，将 `$ffmpeg`、`$ffprobe` 改为对应 exe 的完整路径。每次运行建立独立截图目录。
+## 第二步：确定对局录像
 
-```powershell
-$ErrorActionPreference = 'Stop'
-$ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
-$ffprobe = (Get-Command ffprobe -ErrorAction Stop).Source
-$videos = @(
-    @{ Id = 'A'; Path = 'C:\录像\玩家 A.mp4' },
-    @{ Id = 'B'; Path = 'C:\录像\玩家 B.mp4' }
-)
-$captureRoot = Join-Path $HOME ('.gamer-agent\frames-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $captureRoot | Out-Null
-$invariant = [Globalization.CultureInfo]::InvariantCulture
-$missing = [Collections.Generic.List[object]]::new()
-foreach ($v in $videos) {
-    $v.Path = (Resolve-Path -LiteralPath $v.Path).Path
-    $probe = & $ffprobe -v error -select_streams v:0 -show_entries 'stream=width,height,duration:format=duration' -of json $v.Path
-    if ($LASTEXITCODE -ne 0) { throw "无法读取录像 $($v.Id)" }
-    $info = ($probe -join "`n") | ConvertFrom-Json
-    if (@($info.streams).Count -eq 0) { throw "录像 $($v.Id) 没有视频轨道" }
-    $probe | Set-Content -LiteralPath (Join-Path $captureRoot "$($v.Id)-probe.json") -Encoding utf8
-    $probe # JSON 中包含时长、宽度和高度
-}
+使用用户指定的双方录像；未指定时，从 Xbox/Windows 录像目录查找并确认，记为 A、B。核对录像中的玩家、文明、时长与解析结果，检查取整和结束转场造成的差异。
 
-function Export-ReviewFrame {
-    param($Video, [decimal]$Seconds, [string]$Stage, [switch]$AllowMissing)
-    if ($Seconds -lt 0) { throw '截图时间不能为负数' }
-    $timestamp = $Seconds.ToString($invariant)
-    $file = Join-Path $captureRoot "$($Video.Id)-$Stage-$($timestamp)s.jpg"
-    if (Test-Path -LiteralPath $file) { throw "截图已存在：$file" }
-    & $ffmpeg -hide_banner -loglevel error -nostdin -n -ss $timestamp -i $Video.Path -map 0:v:0 -frames:v 1 -an -sn -dn -vf 'scale=800:600:force_original_aspect_ratio=decrease,pad=800:600:(ow-iw)/2:(oh-ih)/2,setsar=1' -q:v 2 -update 1 $file
-    $exitCode = $LASTEXITCODE
-    $hasFrame = (Test-Path -LiteralPath $file) -and ((Get-Item -LiteralPath $file).Length -gt 0)
-    if ($exitCode -ne 0 -or -not $hasFrame) {
-        if (-not $AllowMissing) { throw "取帧失败：玩家 $($Video.Id)，录像 $timestamp 秒，退出码 $exitCode" }
-        $missing.Add([pscustomobject]@{ player = $Video.Id; video_seconds = $Seconds; exit_code = $exitCode; reason = '结束点未生成有效截图；检查是否超出可解码范围及 FFmpeg 错误' })
-        ConvertTo-Json -InputObject @($missing.ToArray()) -Depth 4 | Set-Content -LiteralPath (Join-Path $captureRoot 'missing-frames.json') -Encoding utf8
-        Write-Warning "结束点缺帧：玩家 $($Video.Id)，录像 $timestamp 秒"
-    }
-}
-```
+## 第三步：对齐游戏时间
 
-缩略图等比例缩放并填充黑边至 800×600，保留完整游戏画面。截图中的时间使用录像秒数；游戏时间需根据第二步的对齐结果换算。
+1. 截取双方录像的 1、3、5、6、7、8 秒画面，记录游戏时钟与播放／暂停／加载状态。用连续画面的时钟增量确认播放速度和稳定计时区间。
+2. 选择双方稳定区间中较晚的游戏时间作为分析起点，分别计算其对应的录像偏移。
+3. 在 1 倍速且无暂停／剪辑的区间，录像偏移 = 起点录像偏移 +（目标游戏时间 - 起点游戏时间）；有变速或中断时分段对齐。
+4. 结束游戏时间以已核实的摘要为准；视频转场和缺帧单独记录，不用其他时间的画面冒充结束帧。
 
-## 第二步：对齐对局人员以及录像游戏时间
+## 第四步：结合录像分析
 
-1. 截取两段录像的 **1、3、5、6、7、8 秒**画面，并转为缩略图 800x600。
-2. 逐张读取第 1、3、5 秒的截图：读取游戏内时钟，记录“玩家、文明、计时器时间、计时器总时间、播放/暂停/加载状态”。
-3. 核对录像是否属于同一对局：玩家、文明、录像计时器总时间一致。任意不一致则提示用户“两局录像不属于同一个对局”
-4. 找“录像稳定计时器时间”：读取第 6、7、8 秒的截图，结合 1、3、5 秒的画面找出录像的稳定录制时的计时器时间。如果截图中计时器增加的时间等于截图间隔的时间，则表示录像稳定。
-5. 对齐“开始分析计时器时间”。选择 A B 中 “录像稳定计时器时间” 中的较大者，作为“开始分析计时器时间”
-6. 对齐“开始分析偏移时间”。根据“开始分析计时器时间”所对应的截图时间，作为“开始分析偏移时间“
-7. 计算”结束分析偏移时间“。”等于”开始分析偏移时间“ + “计时器总时间”
-8. 输出对局的玩家、文明、地图、录像稳定计时器时间（以及定义）、开始分析计时器时间（以及定义）、开始分析偏移时间（以及定义）
-### 开场六个时间点截图
+1. 每 10 个游戏秒成对取帧，补充结束点。缩略图保持比例并填充至 800×600；文字模糊时查看原始分辨率。
+2. 资源、积分、时代和事件时间优先使用解析结果，并保留原始时间戳；10 秒截图不改变摘要的采样频率。
+3. 从画面补充解析结果未覆盖的走位、阵型、视野、建造队列、资源农民分配和接战过程。关键窗口再加密检查；“首次看见”不等于事件发生时间，无法确认的项目标为未知。
+4. 根据证据解释双方决策及其影响，区分可见事实、机制推断和改进建议。
 
-```powershell
-foreach ($v in $videos) {
-    foreach ($seconds in @(1, 3, 5, 6, 7, 8)) {
-        Export-ReviewFrame -Video $v -Seconds $seconds -Stage 'opening'
-    }
-}
-```
+### 积分映射胜率
 
-## 第三步：分析对局游戏
-1. 从"开始分析偏移时间"到“结束分析偏移时间”每隔 10s 截图画面，转为缩略图 800x600，“结束分析偏移时间”要确保截图。
-2. 分析每张截图，按照计时器时间，列出每张截图中的“截图统计信息”：食、木、金、石的数量、以及各资源的农民的数量、资源比例、建造队列、当前积分、地图控制度，是否战斗中，军队各单位的数量，军队单位 Counter 占比，胜率。
-3. 地图控制度说明：可见视野 / 总图视野。
-4. 军队单位 Counter 占比说明：单位 Counter 另一个单位记为 1，单位 Counter 多个单位均记 1.
-5. 胜率：按以下规定和公式计算。
-
-### 每 10 秒采样与结束点补帧
-
-`gamer-agent video analyze` 当前固定每 60 秒采样。本 SKILL 的 10 秒截图使用以下 FFmpeg 循环完成。将示例的开始、结束偏移替换为第二步确认的双方录像秒数；两段范围应对应同一游戏时间区间。
-
-```powershell
-$ranges = @{
-    A = @{ Start = [decimal]3; End = [decimal]26 }
-    B = @{ Start = [decimal]9; End = [decimal]32 }
-}
-foreach ($v in $videos) {
-    $range = $ranges[$v.Id]
-    if ($range.Start -lt 0 -or $range.End -lt $range.Start) { throw "玩家 $($v.Id) 的采样范围无效" }
-    for ($seconds = $range.Start; $seconds -lt $range.End; $seconds += 10) {
-        Export-ReviewFrame -Video $v -Seconds $seconds -Stage 'sample'
-    }
-    # 循环不含结束点，因此无论是否为 10 秒整数倍，都恰好补一次结束点。
-    Export-ReviewFrame -Video $v -Seconds $range.End -Stage 'sample' -AllowMissing
-}
-```
-
-视频时长边界不保证存在可解码帧。结束点缺帧时查看 `missing-frames.json` 与 FFmpeg 错误并在分析中说明，不用其他时间的截图冒充结束点；非结束点取帧失败则停止处理。
-
-### 1. 胜率规定
-
-取同一游戏时间点双方的积分 $S_A,S_B>0$。
-
-| A 积分 / B 积分 | A 胜率 |
-| --- | --- |
-| 1.0 | 50% |
-| 1.1 | 60% |
-| 1.2 | 75% |
-| ≥ 1.3 | 100% |
-
-双方胜率之和为 100%；交换双方积分后，胜率互换。
-
-### 2. 公式
+使用同一游戏时间双方的解析积分 `S_A, S_B > 0`，按摘要实际采样点计算；缺少解析积分时才用清晰的双方同刻截图并标注来源。零分或无法确认时不计算。
 
 ```text
 x = (S_A - S_B) / min(S_A, S_B)
@@ -127,44 +42,19 @@ P_A = max(0, min(1, 1/2 + 11*x/12 + 25*x^3/3))
 P_B = 1 - P_A
 ```
 
-$P_A,P_B$ 取值为 0～1，输出时转换为百分比。
-
-### 3. 胜率映射曲线
+输出转换为百分比。积分比 1.0、1.1、1.2、≥1.3 分别映射为 50%、60%、75%、100%；交换双方积分，胜率互换。这是指定的积分映射值，不是经过校准的真实获胜概率。
 
 ![积分比与胜率映射曲线](assets/score-win-probability.png)
 
-## 第四步：输出总结
-输出 Markdown 报告时，胜率公式统一使用带 `text` 标记的三反引号代码块，按下方模板放在玩家卡片之后、统计表之前。
+## 第五步：输出总结
 
-文本输出模板，不允许超出模板之外的信息：
-````markdown
-{玩家卡片}（玩家A）
-{玩家卡片}（玩家B）
+Markdown 报告按以下顺序组织：
 
-### 胜率计算公式
+1. 双方玩家卡片：姓名、文明、胜负。
+2. 数据来源：对局 ID、解析状态、采样间隔和缺失项。
+3. 上述胜率公式（使用 `text` 代码块）与本局积分映射曲线。
+4. 胜者与败者各自做得对的地方、待改进之处。
+5. 关键转折点，关联解析记录与截图证据：
 
-```text
-x = (S_A - S_B) / min(S_A, S_B)
-P_A = max(0, min(1, 1/2 + 11*x/12 + 25*x^3/3))
-P_B = 1 - P_A
-```
-
-{胜率曲线:svg}
-
-胜者分析：
-做的对的地方：
-待改进的地方：
-败者分析：
-做的对的地方：
-待改建的地方：
-胜率转折点分析：
-|计时器时间|玩家A录像偏移时间|玩家A截图说明|玩家B录像偏移时间|玩家B截图说明|胜率|
-
-
-````
-玩家卡片定义：
-```
-玩家名称: {玩家名称}
-文明: {文明}
-胜负：{胜/负}
-```
+|游戏时间|玩家A录像偏移|玩家A画面说明|玩家B录像偏移|玩家B画面说明|积分映射胜率|
+|---|---|---|---|---|---|
